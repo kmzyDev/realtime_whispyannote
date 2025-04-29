@@ -10,7 +10,7 @@ uv sync
 の先頭の_を削除してください  
 
 > [!NOTE]
-> - 3.10以降のPythonで発生する事象のようです
+> - 3.10以降のPythonで発生する事象のようです  
 https://github.com/neonbjb/tortoise-tts/issues/298#issuecomment-2174432438
 
 2. **モデル配置**  
