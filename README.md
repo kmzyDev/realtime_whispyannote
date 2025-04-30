@@ -24,7 +24,7 @@ uv run whispyannote
 
 **（おまけ1）UI編集のについて**  
 .venv/Lib/site-packages/PySide6/designer.exe を使ってfront.uiを編集  
-pyuic5 -x front.ui -o front.py　でfront.uiからfront.pyが出来上がります 
+uv run pyside6-uic front.ui -o front.py　でfront.uiからfront.pyが出来上がります 
 
 **（おまけ2）ビルド**  
 ビルドもできるようになっています  
