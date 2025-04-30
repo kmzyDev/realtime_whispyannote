@@ -23,7 +23,7 @@ uv run whispyannote
 ※モデルロードにつきアプリ起動まで1分程度かかります
 
 **（おまけ1）UI編集のについて**  
-stable_diffusion_uv\\.venv\Lib\site-packages\qt5_applications\Qt\bin\designer を使ってfront.uiを編集  
+.venv/Lib/site-packages/PySide6/designer.exe を使ってfront.uiを編集  
 pyuic5 -x front.ui -o front.py　でfront.uiからfront.pyが出来上がります 
 
 **（おまけ2）ビルド**  
