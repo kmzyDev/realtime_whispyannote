@@ -23,15 +23,15 @@ CHANNELS = 1                # Whisperがモノラルに最適化されてるの�
 SAMPLE_RATE = 16000         # サンプルレートもWhisperに合わせる
 VAD_THRESHOLD = 0.01        # 無音検知の閾値（要調整）
 BEST_SCORE = 0.20           # 別人判定の閾値（要調整）
-LANGUAGE = "ja"
+LANGUAGE = 'ja'
 
 # Model
 whisper_model = OVModelForSpeechSeq2Seq.from_pretrained('./assets/whisper_turbo').to('GPU')
 whisper_model.compile()
 processor = AutoProcessor.from_pretrained('./assets/whisper_turbo')
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", cache_dir="./assets")
-embedding_model = EmbeddingModel.from_pretrained("pyannote/embedding", cache_dir="./assets")
-embedding_inference = Inference(embedding_model, window="whole")
+pipeline = Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', cache_dir='./assets')
+embedding_model = EmbeddingModel.from_pretrained('pyannote/embedding', cache_dir='./assets')
+embedding_inference = Inference(embedding_model, window='whole')
 
 known_speakers = {}
 
@@ -48,12 +48,13 @@ def identify_speaker(embedding_tensor, max_speakers):
         known_speakers[best_id].append(embedding_tensor)
         return best_id
     if len(known_speakers) < max_speakers:
-        new_id = f"Speaker_{len(known_speakers) + 1}"
+        new_id = f'Speaker_{len(known_speakers) + 1}'
         known_speakers[new_id] = [embedding_tensor]
         return new_id
     if best_id is not None:
         known_speakers[best_id].append(embedding_tensor)
         return best_id
+
 
 class SpeechToTextThread(QThread):
 
@@ -92,6 +93,7 @@ class SpeechToTextThread(QThread):
     def stop(self):
         self.running = False
 
+
 class Receiver(QObject):
 
     # テキストを投げるシグナル
@@ -101,7 +103,7 @@ class Receiver(QObject):
     def handle_data(self, audio_ndarray, max_speakers):
         waveform_pttensor = torch.from_numpy(np.squeeze(audio_ndarray).astype(np.float32) / 32768.0).unsqueeze(0)
         if waveform_pttensor.abs().mean() >  VAD_THRESHOLD:
-            formated_wav = {"waveform": waveform_pttensor, "sample_rate": SAMPLE_RATE}
+            formated_wav = {'waveform': waveform_pttensor, 'sample_rate': SAMPLE_RATE}
             diarization = pipeline(formated_wav, num_speakers=max_speakers)
             for seg, _, _ in diarization.itertracks(yield_label=True):
                 try:
@@ -109,13 +111,14 @@ class Receiver(QObject):
                     embedding = embedding_inference.crop(formated_wav, bounded_seg).squeeze()
                     speaker_id = identify_speaker(embedding, max_speakers)
                 except Exception as e:
-                    speaker_id = "Unknown"
-                inputs = processor(waveform_pttensor.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors="pt")
+                    speaker_id = 'Unknown'
+                inputs = processor(waveform_pttensor.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
                 with torch.no_grad():
-                    generated_ids = whisper_model.generate(inputs["input_features"], language=LANGUAGE)
+                    generated_ids = whisper_model.generate(inputs['input_features'], language=LANGUAGE)
                 text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
                 # 画面にシグナル送信
-                self.send_text.emit(f"{speaker_id}: {text}")
+                self.send_text.emit(f'{speaker_id}: {text}')
+
 
 class MyApp(QMainWindow):
 
@@ -137,12 +140,12 @@ class MyApp(QMainWindow):
 
     def toggle_clicked(self):
         if not self.transcription_thread.isRunning():
-            self.ui.toggle.setText("□")
-            self.ui.label.setText("🎤 録音中...")
+            self.ui.toggle.setText('□')
+            self.ui.label.setText('🎤 録音中...')
             self.transcription_thread.start()
         else:
-            self.ui.toggle.setText("▷")
-            self.ui.label.setText("")
+            self.ui.toggle.setText('▷')
+            self.ui.label.setText('')
             self.transcription_thread.stop()
 
     def update_text(self, text):
@@ -153,18 +156,19 @@ class MyApp(QMainWindow):
         self.transcription_thread.wait()
         event.accept()
 
+
 class SpeakerInputDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("whispyannote")
+        self.setWindowTitle('whispyannote')
         self.setFixedSize(200, 100)
         layout = QVBoxLayout()
         h_layout = QHBoxLayout()
-        h_layout.addWidget(QLabel("参加人数："))
+        h_layout.addWidget(QLabel('参加人数：'))
         self.input_field = QLineEdit(self)
         h_layout.addWidget(self.input_field)
         layout.addLayout(h_layout)
-        ok_button = QPushButton("OK")
+        ok_button = QPushButton('OK')
         ok_button.clicked.connect(self.ok_clicked)
         layout.addWidget(ok_button)
         self.setLayout(layout)
@@ -172,7 +176,7 @@ class SpeakerInputDialog(QDialog):
     def ok_clicked(self):
         value = self.input_field.text().strip()
         if not value.isdigit() or int(value) < 1:
-            QMessageBox.warning(self, "入力エラー", "参加人数は自然数にしてください。")
+            QMessageBox.warning(self, '入力エラー', '参加人数は自然数にしてください。')
             return
         self.max_speakers = int(value)
         self.accept()
