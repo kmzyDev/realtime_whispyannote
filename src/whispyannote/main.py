@@ -96,28 +96,27 @@ class SpeechToTextThread(QThread):
 
 class Receiver(QObject):
 
-    # テキストを投げるシグナル
     send_text = Signal(str)
 
     @Slot(str)
     def handle_data(self, audio_ndarray, max_speakers):
+        if np.abs(audio_ndarray).mean() < VAD_THRESHOLD:
+            return
         waveform_pttensor = torch.from_numpy(np.squeeze(audio_ndarray).astype(np.float32) / 32768.0).unsqueeze(0)
-        if waveform_pttensor.abs().mean() >  VAD_THRESHOLD:
-            formated_wav = {'waveform': waveform_pttensor, 'sample_rate': SAMPLE_RATE}
-            diarization = pipeline(formated_wav, num_speakers=max_speakers)
-            for seg, _, _ in diarization.itertracks(yield_label=True):
-                try:
-                    bounded_seg = Segment(seg.start, min(seg.end, waveform_pttensor.shape[1] / SAMPLE_RATE))
-                    embedding = embedding_inference.crop(formated_wav, bounded_seg).squeeze()
-                    speaker_id = identify_speaker(embedding, max_speakers)
-                except Exception as e:
-                    speaker_id = 'Unknown'
-                inputs = processor(waveform_pttensor.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
-                with torch.no_grad():
-                    generated_ids = whisper_model.generate(inputs['input_features'], language=LANGUAGE)
-                text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-                # 画面にシグナル送信
-                self.send_text.emit(f'{speaker_id}: {text}')
+        formated_wav = {'waveform': waveform_pttensor, 'sample_rate': SAMPLE_RATE}
+        diarization = pipeline(formated_wav, min_speakers=1, max_speakers=max_speakers)
+        for seg, _, _ in diarization.itertracks(yield_label=True):
+            try:
+                bounded_seg = Segment(seg.start, min(seg.end, waveform_pttensor.shape[1] / SAMPLE_RATE))
+                embedding = embedding_inference.crop(formated_wav, bounded_seg).squeeze()
+                speaker_id = identify_speaker(embedding, max_speakers)
+            except Exception as e:
+                speaker_id = 'Unknown'
+            inputs = processor(waveform_pttensor.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
+            with torch.no_grad():
+                generated_ids = whisper_model.generate(inputs['input_features'], language=LANGUAGE)
+            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            self.send_text.emit(f'{speaker_id}: {text}')
 
 
 class MyApp(QMainWindow):
