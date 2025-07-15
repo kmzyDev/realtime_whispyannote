@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QApplication, QMainWindow, QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QMessageBox
-from PySide6.QtCore import QThread, Signal, Slot, QObject
+from PySide6.QtCore import QThread, Signal
 from optimum.intel.openvino import OVModelForSpeechSeq2Seq
 from transformers import AutoProcessor, pipeline
 from pyannote.audio import Model as EmbeddingModel, Pipeline, Inference
@@ -9,9 +9,8 @@ import pyaudio
 import torch
 import numpy as np
 
-import datetime
 import threading
-import time
+import queue
 
 from whispyannote.front import Ui_MainWindow
 
@@ -56,15 +55,12 @@ def identify_speaker(embedding_tensor, max_speakers):
         return best_id
 
 
-class SpeechToTextThread(QThread):
+class RecordingThread(QThread):
 
-    # 音声テンソルと参加人数を投げるシグナル
-    send_tensor_speakers = Signal(np.ndarray, int)
-
-    def __init__(self, max_speakers=None):
+    def __init__(self, audio_queue):
         super().__init__(None)
-        self.running    = False
-        self.max_speakers = max_speakers
+        self.audio_queue = audio_queue
+        self.running = False
 
     def set_device(self, device_id):
         self.device_id = device_id
@@ -82,11 +78,7 @@ class SpeechToTextThread(QThread):
         self.running = True
         while self.running:
             audio_bytes = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            # レシーバにシグナル送信
-            self.send_tensor_speakers.emit(
-                np.frombuffer(audio_bytes, dtype=np.int16).reshape(-1, 1),
-                self.max_speakers
-            )
+            self.audio_queue.put(np.frombuffer(audio_bytes, dtype=np.int16).reshape(-1, 1))
 
         stream.stop_stream()
         stream.close()
@@ -95,34 +87,48 @@ class SpeechToTextThread(QThread):
         self.running = False
 
 
-class Receiver(QObject):
+class SpeechToTextThread(QThread):
 
     send_text = Signal(str)
 
-    @Slot(str)
-    def handle_data(self, audio_ndarray, max_speakers):
-        if np.abs(audio_ndarray).mean() < VAD_THRESHOLD:
-            return
-        waveform_pttensor = torch.from_numpy(np.squeeze(audio_ndarray).astype(np.float32) / 32768.0).unsqueeze(0)
-        formated_wav = {'waveform': waveform_pttensor, 'sample_rate': SAMPLE_RATE}
-        diarization = pipeline(formated_wav, min_speakers=1, max_speakers=max_speakers)
-        for seg, _, _ in diarization.itertracks(yield_label=True):
+    def __init__(self, audio_queue, max_speakers):
+        super().__init__(None)
+        self.audio_queue = audio_queue
+        self.max_speakers = max_speakers
+        self.running = False
+    
+    def run(self):
+        self.running = True
+        while self.running:
             try:
+                audio_ndarray = self.audio_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            if np.abs(audio_ndarray).mean() < VAD_THRESHOLD:
+                continue
+            waveform_pttensor = torch.from_numpy(np.squeeze(audio_ndarray).astype(np.float32) / 32768.0).unsqueeze(0)
+            formated_wav = {'waveform': waveform_pttensor, 'sample_rate': SAMPLE_RATE}
+            diarization = pipeline(formated_wav, min_speakers=1, max_speakers=self.max_speakers)
+            for seg, _, _ in diarization.itertracks(yield_label=True):
                 seg_start = seg.start
                 seg_end = min(seg.end, waveform_pttensor.shape[1] / SAMPLE_RATE)
-                bounded_seg = Segment(seg_start, seg_end)
-                embedding = embedding_inference.crop(formated_wav, bounded_seg).squeeze()
-                speaker_id = identify_speaker(embedding, max_speakers)
-            except Exception as e:
-                continue
-            segment_audio = waveform_pttensor[:, int(seg_start * SAMPLE_RATE):int(seg_end * SAMPLE_RATE)]
-            inputs = processor(segment_audio.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
-            if np.abs(segment_audio.numpy()).mean() < VAD_THRESHOLD:
-                continue
-            with torch.no_grad():
-                generated_ids = whisper_model.generate(inputs['input_features'], language=LANGUAGE)
-            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-            self.send_text.emit(f'{speaker_id}: {text}')
+                segment_audio = waveform_pttensor[:, int(seg_start * SAMPLE_RATE):int(seg_end * SAMPLE_RATE)]
+                if np.abs(segment_audio.numpy()).mean() < VAD_THRESHOLD:
+                    continue
+                try:
+                    bounded_seg = Segment(seg_start, seg_end)
+                    embedding = embedding_inference.crop(formated_wav, bounded_seg).squeeze()
+                    speaker_id = identify_speaker(embedding, self.max_speakers)
+                except Exception as e:
+                    continue
+                inputs = processor(segment_audio.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
+                with torch.no_grad():
+                    generated_ids = whisper_model.generate(inputs['input_features'], language=LANGUAGE)
+                text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                self.send_text.emit(f'{speaker_id}: {text}')
+    
+    def stop(self):
+        self.running = False
 
 
 class MyApp(QMainWindow):
@@ -147,10 +153,10 @@ class MyApp(QMainWindow):
                     pass
         self.max_speakers = self.get_max_speakers()
         self.ui.toggle.clicked.connect(self.toggle_clicked)
-        self.transcription_thread = SpeechToTextThread(max_speakers=self.max_speakers)
-        self.receiver = Receiver()
-        self.transcription_thread.send_tensor_speakers.connect(self.receiver.handle_data)
-        self.receiver.send_text.connect(self.update_text)
+        self.audio_queue = queue.Queue()
+        self.recording_thread = RecordingThread(audio_queue=self.audio_queue)
+        self.transcription_thread = SpeechToTextThread(audio_queue=self.audio_queue, max_speakers=self.max_speakers)
+        self.transcription_thread.send_text.connect(self.update_text)
 
     def get_max_speakers(self):
         dialog = SpeakerInputDialog(self)
@@ -158,23 +164,27 @@ class MyApp(QMainWindow):
         return dialog.max_speakers
 
     def toggle_clicked(self):
-        if not self.transcription_thread.isRunning():
+        if not self.recording_thread.isRunning():
             self.ui.toggle.setText('□')
             self.ui.label.setText('🎤 録音中...')
             self.ui.micSelect.setEnabled(False)
-            self.transcription_thread.set_device(self.ui.micSelect.currentData())
+            self.recording_thread.set_device(self.ui.micSelect.currentData())
+            self.recording_thread.start()
             self.transcription_thread.start()
         else:
             self.ui.toggle.setText('▷')
             self.ui.label.setText('')
             self.ui.micSelect.setEnabled(True)
+            self.recording_thread.stop()
             self.transcription_thread.stop()
 
     def update_text(self, text):
         self.ui.textBrowser.append(text)
 
     def closeEvent(self, event):
+        self.recording_thread.stop()
         self.transcription_thread.stop()
+        self.recording_thread.wait()
         self.transcription_thread.wait()
         AUDIO.terminate()
         event.accept()
