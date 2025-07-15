@@ -15,9 +15,9 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QFont, QFontDatabase, QGradient, QIcon,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QApplication, QGridLayout, QLabel, QMainWindow,
-    QMenuBar, QPushButton, QSizePolicy, QSpacerItem,
-    QStatusBar, QTextBrowser, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QGridLayout, QLabel,
+    QMainWindow, QMenuBar, QPushButton, QSizePolicy,
+    QSpacerItem, QStatusBar, QTextBrowser, QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -28,24 +28,29 @@ class Ui_MainWindow(object):
         self.centralwidget.setObjectName(u"centralwidget")
         self.gridLayout = QGridLayout(self.centralwidget)
         self.gridLayout.setObjectName(u"gridLayout")
-        self.label = QLabel(self.centralwidget)
-        self.label.setObjectName(u"label")
+        self.textBrowser = QTextBrowser(self.centralwidget)
+        self.textBrowser.setObjectName(u"textBrowser")
 
-        self.gridLayout.addWidget(self.label, 1, 0, 1, 2)
+        self.gridLayout.addWidget(self.textBrowser, 1, 0, 1, 3)
 
         self.toggle = QPushButton(self.centralwidget)
         self.toggle.setObjectName(u"toggle")
 
-        self.gridLayout.addWidget(self.toggle, 2, 1, 1, 1)
+        self.gridLayout.addWidget(self.toggle, 3, 2, 1, 1)
 
-        self.textBrowser = QTextBrowser(self.centralwidget)
-        self.textBrowser.setObjectName(u"textBrowser")
+        self.label = QLabel(self.centralwidget)
+        self.label.setObjectName(u"label")
 
-        self.gridLayout.addWidget(self.textBrowser, 0, 0, 1, 2)
+        self.gridLayout.addWidget(self.label, 2, 1, 1, 2)
 
         self.horizontalSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
-        self.gridLayout.addItem(self.horizontalSpacer, 2, 0, 1, 1)
+        self.gridLayout.addItem(self.horizontalSpacer, 3, 0, 1, 1)
+
+        self.micSelect = QComboBox(self.centralwidget)
+        self.micSelect.setObjectName(u"micSelect")
+
+        self.gridLayout.addWidget(self.micSelect, 0, 0, 1, 3)
 
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QMenuBar(MainWindow)
@@ -63,7 +68,7 @@ class Ui_MainWindow(object):
 
     def retranslateUi(self, MainWindow):
         MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"whispyannote", None))
-        self.label.setText("")
         self.toggle.setText(QCoreApplication.translate("MainWindow", u"\u25b7", None))
+        self.label.setText("")
     # retranslateUi
 

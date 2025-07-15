@@ -16,7 +16,6 @@ import time
 from whispyannote.front import Ui_MainWindow
 
 # Param
-DEVICE_ID = 1               # uv run device_list.pyで取得したID
 FORMAT = pyaudio.paInt16    # 16bit
 CHUNK_SIZE = 4096 * 9       # データのチャンクサイズ（要調整）
 CHANNELS = 1                # Whisperがモノラルに最適化されてるのでモノラルにする
@@ -33,6 +32,7 @@ pipeline = Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', cache_di
 embedding_model = EmbeddingModel.from_pretrained('pyannote/embedding', cache_dir='./assets')
 embedding_inference = Inference(embedding_model, window='whole')
 
+AUDIO = pyaudio.PyAudio()
 known_speakers = {}
 
 def identify_speaker(embedding_tensor, max_speakers):
@@ -66,14 +66,16 @@ class SpeechToTextThread(QThread):
         self.running    = False
         self.max_speakers = max_speakers
 
+    def set_device(self, device_id):
+        self.device_id = device_id
+
     def run(self):
-        audio = pyaudio.PyAudio()
-        stream = audio.open(
+        stream = AUDIO.open(
             format=FORMAT,
             channels=CHANNELS,
             rate=SAMPLE_RATE,
             input=True,
-            input_device_index=DEVICE_ID,
+            input_device_index=self.device_id,
             frames_per_buffer=CHUNK_SIZE
         )
         stream.start_stream()
@@ -88,7 +90,6 @@ class SpeechToTextThread(QThread):
 
         stream.stop_stream()
         stream.close()
-        audio.terminate()
 
     def stop(self):
         self.running = False
@@ -125,6 +126,20 @@ class MyApp(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        device_count = AUDIO.get_device_count()
+        for i in range(device_count):
+            device_info = AUDIO.get_device_info_by_index(i)
+            if device_info['maxInputChannels'] > 0:
+                try:
+                    if AUDIO.is_format_supported(
+                        rate=SAMPLE_RATE,
+                        input_device=i,
+                        input_channels=CHANNELS,
+                        input_format=FORMAT
+                    ):
+                        self.ui.micSelect.addItem(f'{device_info["name"]}', i)
+                except ValueError:
+                    pass
         self.max_speakers = self.get_max_speakers()
         self.ui.toggle.clicked.connect(self.toggle_clicked)
         self.transcription_thread = SpeechToTextThread(max_speakers=self.max_speakers)
@@ -141,10 +156,13 @@ class MyApp(QMainWindow):
         if not self.transcription_thread.isRunning():
             self.ui.toggle.setText('□')
             self.ui.label.setText('🎤 録音中...')
+            self.ui.micSelect.setEnabled(False)
+            self.transcription_thread.set_device(self.ui.micSelect.currentData())
             self.transcription_thread.start()
         else:
             self.ui.toggle.setText('▷')
             self.ui.label.setText('')
+            self.ui.micSelect.setEnabled(True)
             self.transcription_thread.stop()
 
     def update_text(self, text):
@@ -153,6 +171,7 @@ class MyApp(QMainWindow):
     def closeEvent(self, event):
         self.transcription_thread.stop()
         self.transcription_thread.wait()
+        AUDIO.terminate()
         event.accept()
 
 

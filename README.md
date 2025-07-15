@@ -31,8 +31,3 @@ uv run pyside6-uic front.ui -o front.py　でfront.uiからfront.pyが出来上�
 uv build  
 uv tool install dist\whispyannote-0.1.0-py3-none-any.whl  
 （.exeファイルから起動する時はassets以下も同一階層に置いてください）
-
-## 音声が認識されない時は
-uv run device_list.py  
-↑音声デバイスの一覧が表示されます  
-お使いの入力デバイスのIDを控えてsrc/whispyannote/main.pyの19行目(DEVICE_ID)に記述してください
