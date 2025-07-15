@@ -108,12 +108,17 @@ class Receiver(QObject):
         diarization = pipeline(formated_wav, min_speakers=1, max_speakers=max_speakers)
         for seg, _, _ in diarization.itertracks(yield_label=True):
             try:
-                bounded_seg = Segment(seg.start, min(seg.end, waveform_pttensor.shape[1] / SAMPLE_RATE))
+                seg_start = seg.start
+                seg_end = min(seg.end, waveform_pttensor.shape[1] / SAMPLE_RATE)
+                bounded_seg = Segment(seg_start, seg_end)
                 embedding = embedding_inference.crop(formated_wav, bounded_seg).squeeze()
                 speaker_id = identify_speaker(embedding, max_speakers)
             except Exception as e:
-                speaker_id = 'Unknown'
-            inputs = processor(waveform_pttensor.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
+                continue
+            segment_audio = waveform_pttensor[:, int(seg_start * SAMPLE_RATE):int(seg_end * SAMPLE_RATE)]
+            inputs = processor(segment_audio.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
+            if np.abs(segment_audio.numpy()).mean() < VAD_THRESHOLD:
+                continue
             with torch.no_grad():
                 generated_ids = whisper_model.generate(inputs['input_features'], language=LANGUAGE)
             text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
