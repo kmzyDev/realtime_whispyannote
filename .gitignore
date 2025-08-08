@@ -11,3 +11,6 @@ wheels/
 
 # Pre-trained Models
 assets/
+
+# cpp DLLs
+*.dll

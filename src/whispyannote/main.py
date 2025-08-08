@@ -9,10 +9,29 @@ import pyaudio
 import torch
 import numpy as np
 
+import ctypes
 import threading
 import queue
 
 from whispyannote.front import Ui_MainWindow
+cable_dll = ctypes.cdll.LoadLibrary('./src/whispyannote/cable.dll')
+select_dll = ctypes.cdll.LoadLibrary('./src/whispyannote/device_select.dll')
+
+# Prototype
+cable_dll.StartCapture.argtypes = [ctypes.c_char_p]
+cable_dll.StartCapture.restype = ctypes.c_int
+cable_dll.GetAudio.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)), ctypes.POINTER(ctypes.c_int)]
+cable_dll.GetAudio.restype = ctypes.c_int
+cable_dll.StopCapture.argtypes = []
+cable_dll.StopCapture.restype = None
+select_dll.RefreshDevices.argtypes = []
+select_dll.RefreshDevices.restype = ctypes.c_int
+select_dll.GetRenderDeviceCount.argtypes = []
+select_dll.GetRenderDeviceCount.restype = ctypes.c_int
+select_dll.GetRenderDeviceName.argtypes = [ctypes.c_int]
+select_dll.GetRenderDeviceName.restype = ctypes.c_char_p
+select_dll.GetRenderDeviceId.argtypes = [ctypes.c_int]
+select_dll.GetRenderDeviceId.restype = ctypes.c_char_p
 
 # Param
 FORMAT = pyaudio.paInt16    # 16bit
@@ -55,7 +74,7 @@ def identify_speaker(embedding_tensor, max_speakers):
         return best_id
 
 
-class RecordingThread(QThread):
+class MicRecordingThread(QThread):
 
     def __init__(self, audio_queue):
         super().__init__(None)
@@ -85,6 +104,36 @@ class RecordingThread(QThread):
 
     def stop(self):
         self.running = False
+
+
+class LoopRecordingThread(QThread):
+
+    def __init__(self, audio_queue):
+        super().__init__(None)
+        self.audio_queue = audio_queue
+        self.running = False
+        self.device_id = None
+    
+    def set_device(self, device_id):
+        self.device_id = device_id
+        
+    def run(self):
+        cable_dll.StartCapture(self.device_id)
+        self.running = True
+        while self.running:
+            buffer_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+            length = ctypes.c_int(0)
+            ret = cable_dll.GetAudio(ctypes.byref(buffer_ptr), ctypes.byref(length))
+            if ret != 1 or length.value <= 0:
+                continue
+            
+            raw_bytes = ctypes.string_at(buffer_ptr, length.value)
+            self.audio_queue.put(np.frombuffer(raw_bytes, dtype=np.int16).reshape(-1, 1))
+
+    def stop(self):
+        self.running = False
+        cable_dll.StopCapture()
+        self.wait()
 
 
 class SpeechToTextThread(QThread):
@@ -151,10 +200,18 @@ class MyApp(QMainWindow):
                         self.ui.micSelect.addItem(f'{device_info["name"]}', i)
                 except ValueError:
                     pass
+        select_dll.RefreshDevices()
+        render_device_count = select_dll.GetRenderDeviceCount()
+        for i in range(render_device_count):
+            device_name = select_dll.GetRenderDeviceName(i)
+            device_id = select_dll.GetRenderDeviceId(i)
+            if device_name and device_id:
+                self.ui.loopSelect.addItem(device_name.decode('utf-8'), device_id)
         self.max_speakers = self.get_max_speakers()
         self.ui.toggle.clicked.connect(self.toggle_clicked)
         self.audio_queue = queue.Queue()
-        self.recording_thread = RecordingThread(audio_queue=self.audio_queue)
+        self.mic_recording_thread = MicRecordingThread(audio_queue=self.audio_queue)
+        self.loop_recording_thread = LoopRecordingThread(audio_queue=self.audio_queue)
         self.transcription_thread = SpeechToTextThread(audio_queue=self.audio_queue, max_speakers=self.max_speakers)
         self.transcription_thread.send_text.connect(self.update_text)
 
@@ -164,27 +221,34 @@ class MyApp(QMainWindow):
         return dialog.max_speakers
 
     def toggle_clicked(self):
-        if not self.recording_thread.isRunning():
+        if not self.mic_recording_thread.isRunning():
             self.ui.toggle.setText('□')
             self.ui.label.setText('🎤 録音中...')
             self.ui.micSelect.setEnabled(False)
-            self.recording_thread.set_device(self.ui.micSelect.currentData())
-            self.recording_thread.start()
+            self.ui.loopSelect.setEnabled(False)
+            self.mic_recording_thread.set_device(self.ui.micSelect.currentData())
+            self.loop_recording_thread.set_device(self.ui.loopSelect.currentData())
+            self.mic_recording_thread.start()
+            self.loop_recording_thread.start()
             self.transcription_thread.start()
         else:
             self.ui.toggle.setText('▷')
             self.ui.label.setText('')
             self.ui.micSelect.setEnabled(True)
-            self.recording_thread.stop()
+            self.ui.loopSelect.setEnabled(True)
+            self.mic_recording_thread.stop()
+            self.loop_recording_thread.stop()
             self.transcription_thread.stop()
 
     def update_text(self, text):
         self.ui.textBrowser.append(text)
 
     def closeEvent(self, event):
-        self.recording_thread.stop()
+        self.mic_recording_thread.stop()
+        self.loop_recording_thread.stop()
         self.transcription_thread.stop()
-        self.recording_thread.wait()
+        self.mic_recording_thread.wait()
+        self.loop_recording_thread.wait()
         self.transcription_thread.wait()
         AUDIO.terminate()
         event.accept()
