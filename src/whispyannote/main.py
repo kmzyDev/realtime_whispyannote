@@ -1,19 +1,29 @@
-from PySide6.QtWidgets import QApplication, QMainWindow, QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QMessageBox
-from PySide6.QtCore import QThread, Signal
-from optimum.intel.openvino import OVModelForSpeechSeq2Seq
-from transformers import AutoProcessor, pipeline
-from pyannote.audio import Model as EmbeddingModel, Pipeline, Inference
-from pyannote.core import Segment
-from sklearn.metrics.pairwise import cosine_similarity
-import pyaudio
-import torch
-import numpy as np
-
 import ctypes
-import threading
 import queue
 
+import numpy as np
+import pyaudio
+import torch
+from optimum.intel.openvino import OVModelForSpeechSeq2Seq
+from pyannote.audio import Model as EmbeddingModel, Inference, Pipeline
+from pyannote.core import Segment
+from PySide6.QtCore import QThread, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
+from sklearn.metrics.pairwise import cosine_similarity
+from transformers import AutoProcessor
+
 from whispyannote.front import Ui_MainWindow
+
 cable_dll = ctypes.cdll.LoadLibrary('./src/whispyannote/cable.dll')
 select_dll = ctypes.cdll.LoadLibrary('./src/whispyannote/device_select.dll')
 
@@ -34,12 +44,12 @@ select_dll.GetRenderDeviceId.argtypes = [ctypes.c_int]
 select_dll.GetRenderDeviceId.restype = ctypes.c_char_p
 
 # Param
-FORMAT = pyaudio.paInt16    # 16bit
-CHUNK_SIZE = 4096 * 9       # データのチャンクサイズ（要調整）
-CHANNELS = 1                # Whisperがモノラルに最適化されてるのでモノラルにする
-SAMPLE_RATE = 16000         # サンプルレートもWhisperに合わせる
-VAD_THRESHOLD = 0.01        # 無音検知の閾値（要調整）
-BEST_SCORE = 0.20           # 別人判定の閾値（要調整）
+FORMAT = pyaudio.paInt16  # 16bit
+CHUNK_SIZE = 4096 * 9  # データのチャンクサイズ（要調整）
+CHANNELS = 1  # Whisperがモノラルに最適化されてるのでモノラルにする
+SAMPLE_RATE = 16000  # サンプルレートもWhisperに合わせる
+VAD_THRESHOLD = 0.01  # 無音検知の閾値（要調整）
+BEST_SCORE = 0.20  # 別人判定の閾値（要調整）
 LANGUAGE = 'ja'
 
 # Model
@@ -52,6 +62,7 @@ embedding_inference = Inference(embedding_model, window='whole')
 
 AUDIO = pyaudio.PyAudio()
 known_speakers = {}
+
 
 def identify_speaker(embedding_tensor, max_speakers):
     best_score = 0
@@ -91,7 +102,7 @@ class MicRecordingThread(QThread):
             rate=SAMPLE_RATE,
             input=True,
             input_device_index=self.device_id,
-            frames_per_buffer=CHUNK_SIZE
+            frames_per_buffer=CHUNK_SIZE,
         )
         stream.start_stream()
         self.running = True
@@ -113,10 +124,10 @@ class LoopRecordingThread(QThread):
         self.audio_queue = audio_queue
         self.running = False
         self.device_id = None
-    
+
     def set_device(self, device_id):
         self.device_id = device_id
-        
+
     def run(self):
         cable_dll.StartCapture(self.device_id)
         self.running = True
@@ -126,7 +137,7 @@ class LoopRecordingThread(QThread):
             ret = cable_dll.GetAudio(ctypes.byref(buffer_ptr), ctypes.byref(length))
             if ret != 1 or length.value <= 0:
                 continue
-            
+
             raw_bytes = ctypes.string_at(buffer_ptr, length.value)
             self.audio_queue.put(np.frombuffer(raw_bytes, dtype=np.int16).reshape(-1, 1))
 
@@ -145,7 +156,7 @@ class SpeechToTextThread(QThread):
         self.audio_queue = audio_queue
         self.max_speakers = max_speakers
         self.running = False
-    
+
     def run(self):
         self.running = True
         while self.running:
@@ -161,21 +172,21 @@ class SpeechToTextThread(QThread):
             for seg, _, _ in diarization.itertracks(yield_label=True):
                 seg_start = seg.start
                 seg_end = min(seg.end, waveform_pttensor.shape[1] / SAMPLE_RATE)
-                segment_audio = waveform_pttensor[:, int(seg_start * SAMPLE_RATE):int(seg_end * SAMPLE_RATE)]
+                segment_audio = waveform_pttensor[:, int(seg_start * SAMPLE_RATE) : int(seg_end * SAMPLE_RATE)]
                 if np.abs(segment_audio.numpy()).mean() < VAD_THRESHOLD:
                     continue
                 try:
                     bounded_seg = Segment(seg_start, seg_end)
                     embedding = embedding_inference.crop(formated_wav, bounded_seg).squeeze()
                     speaker_id = identify_speaker(embedding, self.max_speakers)
-                except Exception as e:
+                except Exception:
                     continue
                 inputs = processor(segment_audio.squeeze(), sampling_rate=SAMPLE_RATE, return_tensors='pt')
                 with torch.no_grad():
                     generated_ids = whisper_model.generate(inputs['input_features'], language=LANGUAGE)
                 text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
                 self.send_text.emit(f'{speaker_id}: {text}')
-    
+
     def stop(self):
         self.running = False
 
@@ -192,10 +203,7 @@ class MyApp(QMainWindow):
             if device_info['maxInputChannels'] > 0:
                 try:
                     if AUDIO.is_format_supported(
-                        rate=SAMPLE_RATE,
-                        input_device=i,
-                        input_channels=CHANNELS,
-                        input_format=FORMAT
+                        rate=SAMPLE_RATE, input_device=i, input_channels=CHANNELS, input_format=FORMAT
                     ):
                         self.ui.micSelect.addItem(f'{device_info["name"]}', i)
                 except ValueError:
