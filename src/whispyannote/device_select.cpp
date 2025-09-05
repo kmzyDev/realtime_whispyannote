@@ -6,6 +6,8 @@
 #include <vector>
 #include <string>
 
+#define EXPORT extern "C" __declspec(dllexport)
+
 EXTERN_C const PROPERTYKEY PKEY_Device_FriendlyName = {
     {0xa45c254e, 0xdf1c, 0x4efd, {0x80,0x20,0x67,0xd1,0x46,0xa8,0x50,0xe0}},
     14
@@ -18,20 +20,6 @@ struct AudioDevice {
 };
 
 std::vector<AudioDevice> renderDevices;
-
-extern "C" __declspec(dllexport) int GetRenderDeviceCount() {
-    return renderDevices.size();
-}
-
-extern "C" __declspec(dllexport) const char* GetRenderDeviceName(int index) {
-    if (index < 0 || index >= renderDevices.size()) return nullptr;
-    return renderDevices[index].name.c_str();
-}
-
-extern "C" __declspec(dllexport) const char* GetRenderDeviceId(int index) {
-    if (index < 0 || index >= renderDevices.size()) return nullptr;
-    return renderDevices[index].id.c_str();
-}
 
 void EnumerateDevices(IMMDeviceEnumerator* pDeviceEnum, EDataFlow dataFlow, std::vector<AudioDevice>& deviceList) {
     deviceList.clear();
@@ -87,7 +75,21 @@ void EnumerateDevices(IMMDeviceEnumerator* pDeviceEnum, EDataFlow dataFlow, std:
     pDeviceCollection->Release();
 }
 
-extern "C" __declspec(dllexport) int RefreshDevices() {
+EXPORT int GetRenderDeviceCount() {
+    return renderDevices.size();
+}
+
+EXPORT const char* GetRenderDeviceName(int index) {
+    if (index < 0 || index >= renderDevices.size()) return nullptr;
+    return renderDevices[index].name.c_str();
+}
+
+EXPORT const char* GetRenderDeviceId(int index) {
+    if (index < 0 || index >= renderDevices.size()) return nullptr;
+    return renderDevices[index].id.c_str();
+}
+
+EXPORT int RefreshDevices() {
     IMMDeviceEnumerator* pDeviceEnum = nullptr;
     HRESULT hr = CoCreateInstance(
         __uuidof(MMDeviceEnumerator),

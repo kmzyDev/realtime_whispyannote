@@ -10,9 +10,6 @@
 #include <algorithm>
 #include <chrono>
 
-// for debug
-#include <iostream>
-
 #define EXPORT extern "C" __declspec(dllexport)
 
 static std::vector<BYTE> g_buffer;
