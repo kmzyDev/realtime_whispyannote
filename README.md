@@ -16,8 +16,8 @@ https://github.com/neonbjb/tortoise-tts/issues/298#issuecomment-2174432438
 
 2. **モデル配置**  
 ```
-uv run dlwhisper.py
-uv run dlannote.py
+uv run dlmodel/dlwhisper.py
+uv run dlmodel/dlannote.py
 ```
 ※dlannoteはHugging Faceのトークンと同意が必要になります
 
