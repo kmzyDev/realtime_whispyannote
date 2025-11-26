@@ -8,7 +8,6 @@ dependencies = [
     "openvino ==2024.1.0",
     "optimum-intel ==1.22.0",
     "pyannote-audio ==3.3.2",
-    "pyaudio ==0.2.14",
     "pyside6 ==6.9.0",
     "torch ==2.6.0",
     "torchaudio ==2.6.0",

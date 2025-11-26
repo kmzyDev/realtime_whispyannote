@@ -2,7 +2,6 @@ import ctypes
 import queue
 
 import numpy as np
-import pyaudio
 import torch
 from optimum.intel.openvino import OVModelForSpeechSeq2Seq
 from pyannote.audio import Model as EmbeddingModel, Inference, Pipeline
@@ -50,8 +49,6 @@ select_dll.GetDeviceId.argtypes = [ctypes.c_int]
 select_dll.GetDeviceId.restype = ctypes.c_char_p
 
 # Param
-FORMAT = pyaudio.paInt16  # 16bit
-CHUNK_SIZE = 4096 * 9  # データのチャンクサイズ（要調整）
 CHANNELS = 1  # Whisperがモノラルに最適化されてるのでモノラルにする
 SAMPLE_RATE = 16000  # サンプルレートもWhisperに合わせる
 VAD_THRESHOLD = 0.01  # 無音検知の閾値（要調整）
@@ -66,7 +63,6 @@ pipeline = Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', cache_di
 embedding_model = EmbeddingModel.from_pretrained('pyannote/embedding', cache_dir='./assets')
 embedding_inference = Inference(embedding_model, window='whole')
 
-AUDIO = pyaudio.PyAudio()
 known_speakers = {}
 
 
@@ -91,65 +87,43 @@ def identify_speaker(embedding_tensor, max_speakers):
         return best_id
 
 
-class MicRecordingThread(QThread):
+class RecordingThread(QThread):
 
-    def __init__(self, audio_queue):
-        super().__init__(None)
-        self.audio_queue = audio_queue
-        self.running = False
-
-    def set_device(self, device_id):
-        self.device_id = device_id
-
-    def run(self):
-        stream = AUDIO.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=SAMPLE_RATE,
-            input=True,
-            input_device_index=self.device_id,
-            frames_per_buffer=CHUNK_SIZE,
-        )
-        stream.start_stream()
-        self.running = True
-        while self.running:
-            audio_bytes = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            self.audio_queue.put(np.frombuffer(audio_bytes, dtype=np.int16).reshape(-1, 1))
-
-        stream.stop_stream()
-        stream.close()
-
-    def stop(self):
-        self.running = False
-
-
-class LoopRecordingThread(QThread):
-
-    def __init__(self, audio_queue):
+    def __init__(self, audio_queue, device_type):
         super().__init__(None)
         self.audio_queue = audio_queue
         self.running = False
         self.device_id = None
-
+        self.device_type = device_type
+        if device_type == 'loop':
+            self.start_recording = cable_dll.StartLoopRecording
+            self.get_audio = cable_dll.GetLoopAudio
+            self.stop_recording = cable_dll.StopLoopRecording
+        else:
+            self.start_recording = cable_dll.StartMicRecording
+            self.get_audio = cable_dll.GetMicAudio
+            self.stop_recording = cable_dll.StopMicRecording
+    
     def set_device(self, device_id):
         self.device_id = device_id
-
+        
     def run(self):
-        cable_dll.StartLoopRecording(self.device_id)
+        self.start_recording(self.device_id)
         self.running = True
         while self.running:
             buffer_ptr = ctypes.POINTER(ctypes.c_ubyte)()
             length = ctypes.c_int(0)
-            ret = cable_dll.GetLoopAudio(ctypes.byref(buffer_ptr), ctypes.byref(length))
+            ret = self.get_audio(ctypes.byref(buffer_ptr), ctypes.byref(length))
             if ret != 1 or length.value <= 0:
                 continue
-
+            
             raw_bytes = ctypes.string_at(buffer_ptr, length.value)
-            self.audio_queue.put(np.frombuffer(raw_bytes, dtype=np.int16).reshape(-1, 1))
-
+            raw_ndarray = np.frombuffer(raw_bytes, dtype=np.int16).reshape(-1, 1)
+            self.audio_queue.put((raw_ndarray.astype(np.float32) / 32768.0))
+    
     def stop(self):
         self.running = False
-        cable_dll.StopLoopRecording()
+        self.stop_recording()
         self.wait()
 
 
@@ -172,7 +146,7 @@ class SpeechToTextThread(QThread):
                 continue
             if np.abs(audio_ndarray).mean() < VAD_THRESHOLD:
                 continue
-            waveform_pttensor = torch.from_numpy(np.squeeze(audio_ndarray).astype(np.float32) / 32768.0).unsqueeze(0)
+            waveform_pttensor = torch.from_numpy(np.squeeze(audio_ndarray)).unsqueeze(0)
             formated_wav = {'waveform': waveform_pttensor, 'sample_rate': SAMPLE_RATE}
             diarization = pipeline(formated_wav, min_speakers=1, max_speakers=self.max_speakers)
             for seg, _, _ in diarization.itertracks(yield_label=True):
@@ -203,29 +177,23 @@ class MyApp(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        device_count = AUDIO.get_device_count()
-        for i in range(device_count):
-            device_info = AUDIO.get_device_info_by_index(i)
-            if device_info['maxInputChannels'] > 0:
-                try:
-                    if AUDIO.is_format_supported(
-                        rate=SAMPLE_RATE, input_device=i, input_channels=CHANNELS, input_format=FORMAT
-                    ):
-                        self.ui.micSelect.addItem(f'{device_info["name"]}', i)
-                except ValueError:
-                    pass
         select_dll.RefreshDevices(0)
-        render_device_count = select_dll.GetDeviceCount()
-        for i in range(render_device_count):
+        for i in range(select_dll.GetDeviceCount()):
             device_name = select_dll.GetDeviceName(i)
             device_id = select_dll.GetDeviceId(i)
             if device_name and device_id:
                 self.ui.loopSelect.addItem(device_name.decode('utf-8'), device_id)
+        select_dll.RefreshDevices(1)
+        for i in range(select_dll.GetDeviceCount()):
+            device_name = select_dll.GetDeviceName(i)
+            device_id = select_dll.GetDeviceId(i)
+            if device_name and device_id:
+                self.ui.micSelect.addItem(device_name.decode('utf-8'), device_id)
         self.max_speakers = self.get_max_speakers()
         self.ui.toggle.clicked.connect(self.toggle_clicked)
         self.audio_queue = queue.Queue()
-        self.mic_recording_thread = MicRecordingThread(audio_queue=self.audio_queue)
-        self.loop_recording_thread = LoopRecordingThread(audio_queue=self.audio_queue)
+        self.mic_recording_thread = RecordingThread(audio_queue=self.audio_queue, device_type='mic')
+        self.loop_recording_thread = RecordingThread(audio_queue=self.audio_queue, device_type='loop')
         self.transcription_thread = SpeechToTextThread(audio_queue=self.audio_queue, max_speakers=self.max_speakers)
         self.transcription_thread.send_text.connect(self.update_text)
 
@@ -264,7 +232,6 @@ class MyApp(QMainWindow):
         self.mic_recording_thread.wait()
         self.loop_recording_thread.wait()
         self.transcription_thread.wait()
-        AUDIO.terminate()
         event.accept()
 
 
