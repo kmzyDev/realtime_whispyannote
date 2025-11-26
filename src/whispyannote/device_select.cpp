@@ -6,8 +6,6 @@
 #include <vector>
 #include <string>
 
-#define EXPORT extern "C" __declspec(dllexport)
-
 EXTERN_C const PROPERTYKEY PKEY_Device_FriendlyName = {
     {0xa45c254e, 0xdf1c, 0x4efd, {0x80,0x20,0x67,0xd1,0x46,0xa8,0x50,0xe0}},
     14
@@ -74,39 +72,42 @@ void EnumerateDevices(IMMDeviceEnumerator* pDeviceEnum, EDataFlow dataFlow, std:
 
     pDeviceCollection->Release();
 }
-
-EXPORT int GetRenderDeviceCount() {
-    return renderDevices.size();
-}
-
-EXPORT const char* GetRenderDeviceName(int index) {
-    if (index < 0 || index >= renderDevices.size()) return nullptr;
-    return renderDevices[index].name.c_str();
-}
-
-EXPORT const char* GetRenderDeviceId(int index) {
-    if (index < 0 || index >= renderDevices.size()) return nullptr;
-    return renderDevices[index].id.c_str();
-}
-
-EXPORT int RefreshDevices() {
-    IMMDeviceEnumerator* pDeviceEnum = nullptr;
-    HRESULT hr = CoCreateInstance(
-        __uuidof(MMDeviceEnumerator),
-        nullptr,
-        CLSCTX_ALL,
-        __uuidof(IMMDeviceEnumerator),
-        (void**)&pDeviceEnum
-    );
-    if (FAILED(hr)) {
-        std::cerr << "CoCreateInstance failed" << std::endl;
-        CoUninitialize();
-        return -1;
+extern "C" {
+    __declspec(dllexport)
+    int GetDeviceCount() {
+        return renderDevices.size();
     }
 
-    EnumerateDevices(pDeviceEnum, eRender, renderDevices);
+    __declspec(dllexport)
+    const char* GetDeviceName(int index) {
+        if (index < 0 || index >= static_cast<int>(renderDevices.size())) return nullptr;
+        return renderDevices[index].name.c_str();
+    }
 
-    pDeviceEnum->Release();
-    CoUninitialize();
-    return 0;
+    __declspec(dllexport)
+    const char* GetDeviceId(int index) {
+        if (index < 0 || index >= static_cast<int>(renderDevices.size())) return nullptr;
+        return renderDevices[index].id.c_str();
+    }
+
+    __declspec(dllexport)
+    int RefreshDevices(int dataFlow) {
+        IMMDeviceEnumerator* pDeviceEnum = nullptr;
+        HRESULT hr = CoCreateInstance(
+            __uuidof(MMDeviceEnumerator),
+            nullptr,
+            CLSCTX_ALL,
+            __uuidof(IMMDeviceEnumerator),
+            (void**)&pDeviceEnum
+        );
+        if (FAILED(hr)) {
+            return -1;
+        }
+        
+        // 0: eRender, 1: eCapture
+        EnumerateDevices(pDeviceEnum, static_cast<EDataFlow>(dataFlow), renderDevices);
+
+        pDeviceEnum->Release();
+        return 0;
+    }
 }

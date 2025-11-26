@@ -28,20 +28,26 @@ cable_dll = ctypes.cdll.LoadLibrary('./src/whispyannote/cable.dll')
 select_dll = ctypes.cdll.LoadLibrary('./src/whispyannote/device_select.dll')
 
 # Prototype
-cable_dll.StartCapture.argtypes = [ctypes.c_char_p]
-cable_dll.StartCapture.restype = ctypes.c_int
-cable_dll.GetAudio.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)), ctypes.POINTER(ctypes.c_int)]
-cable_dll.GetAudio.restype = ctypes.c_int
-cable_dll.StopCapture.argtypes = []
-cable_dll.StopCapture.restype = None
-select_dll.RefreshDevices.argtypes = []
+cable_dll.StartLoopRecording.argtypes = [ctypes.c_char_p]
+cable_dll.StartLoopRecording.restype = ctypes.c_int
+cable_dll.StartMicRecording.argtypes = [ctypes.c_char_p]
+cable_dll.StartMicRecording.restype = ctypes.c_int
+cable_dll.GetLoopAudio.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)), ctypes.POINTER(ctypes.c_int)]
+cable_dll.GetLoopAudio.restype = ctypes.c_int
+cable_dll.GetMicAudio.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)), ctypes.POINTER(ctypes.c_int)]
+cable_dll.GetMicAudio.restype = ctypes.c_int
+cable_dll.StopLoopRecording.argtypes = []
+cable_dll.StopLoopRecording.restype = None
+cable_dll.StopMicRecording.argtypes = []
+cable_dll.StopMicRecording.restype = None
+select_dll.RefreshDevices.argtypes = [ctypes.c_int]
 select_dll.RefreshDevices.restype = ctypes.c_int
-select_dll.GetRenderDeviceCount.argtypes = []
-select_dll.GetRenderDeviceCount.restype = ctypes.c_int
-select_dll.GetRenderDeviceName.argtypes = [ctypes.c_int]
-select_dll.GetRenderDeviceName.restype = ctypes.c_char_p
-select_dll.GetRenderDeviceId.argtypes = [ctypes.c_int]
-select_dll.GetRenderDeviceId.restype = ctypes.c_char_p
+select_dll.GetDeviceCount.argtypes = []
+select_dll.GetDeviceCount.restype = ctypes.c_int
+select_dll.GetDeviceName.argtypes = [ctypes.c_int]
+select_dll.GetDeviceName.restype = ctypes.c_char_p
+select_dll.GetDeviceId.argtypes = [ctypes.c_int]
+select_dll.GetDeviceId.restype = ctypes.c_char_p
 
 # Param
 FORMAT = pyaudio.paInt16  # 16bit
@@ -129,12 +135,12 @@ class LoopRecordingThread(QThread):
         self.device_id = device_id
 
     def run(self):
-        cable_dll.StartCapture(self.device_id)
+        cable_dll.StartLoopRecording(self.device_id)
         self.running = True
         while self.running:
             buffer_ptr = ctypes.POINTER(ctypes.c_ubyte)()
             length = ctypes.c_int(0)
-            ret = cable_dll.GetAudio(ctypes.byref(buffer_ptr), ctypes.byref(length))
+            ret = cable_dll.GetLoopAudio(ctypes.byref(buffer_ptr), ctypes.byref(length))
             if ret != 1 or length.value <= 0:
                 continue
 
@@ -143,7 +149,7 @@ class LoopRecordingThread(QThread):
 
     def stop(self):
         self.running = False
-        cable_dll.StopCapture()
+        cable_dll.StopLoopRecording()
         self.wait()
 
 
@@ -208,11 +214,11 @@ class MyApp(QMainWindow):
                         self.ui.micSelect.addItem(f'{device_info["name"]}', i)
                 except ValueError:
                     pass
-        select_dll.RefreshDevices()
-        render_device_count = select_dll.GetRenderDeviceCount()
+        select_dll.RefreshDevices(0)
+        render_device_count = select_dll.GetDeviceCount()
         for i in range(render_device_count):
-            device_name = select_dll.GetRenderDeviceName(i)
-            device_id = select_dll.GetRenderDeviceId(i)
+            device_name = select_dll.GetDeviceName(i)
+            device_id = select_dll.GetDeviceId(i)
             if device_name and device_id:
                 self.ui.loopSelect.addItem(device_name.decode('utf-8'), device_id)
         self.max_speakers = self.get_max_speakers()

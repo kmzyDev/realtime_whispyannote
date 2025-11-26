@@ -10,16 +10,21 @@
 #include <algorithm>
 #include <chrono>
 
-#define EXPORT extern "C" __declspec(dllexport)
-
-static std::vector<BYTE> g_buffer;
-static std::vector<BYTE> g_returnBuffer;
-static std::mutex g_buffer_mutex;
-static std::atomic<bool> g_running(false);
-static std::thread g_thread;
-static size_t g_minBufferSize = 16000 * sizeof(int16_t) * 5;
+static std::vector<BYTE> g_loopBuffer;
+static std::vector<BYTE> g_micBuffer;
+static std::vector<BYTE> g_returnLoopBuffer;
+static std::vector<BYTE> g_returnMicBuffer;
+static std::mutex g_loopBufferMutex;
+static std::mutex g_micBufferMutex;
+static std::atomic<bool> g_loopRunning(false);
+static std::atomic<bool> g_micRunning(false);
+static std::thread g_loopThread;
+static std::thread g_micThread;
+static size_t g_minLoopBufferSize = 16000 * sizeof(int16_t) * 5;
+static size_t g_minMicBufferSize = 16000 * sizeof(int16_t) * 4;
 
 static std::wstring g_loopId;
+static std::wstring g_micId;
 
 inline float clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -55,7 +60,8 @@ void ConvertFloat32ToInt16Mono16k(const float* pFloatSamples, size_t frameCount,
     }
 }
 
-void CaptureThread(std::wstring loopId) {
+void LoopRecordingThread(std::wstring loopId) {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     IMMDeviceEnumerator* pDeviceEnum = nullptr;
     IMMDevice *pLoopDevice = nullptr;
     IAudioClient *pLoopClient = nullptr;
@@ -81,7 +87,7 @@ void CaptureThread(std::wstring loopId) {
     pLoopClient->Start();
 
 
-    while (g_running) {
+    while (g_loopRunning) {
         DWORD wait = WaitForSingleObject(loopEvent, 1000);
         if (wait == WAIT_TIMEOUT) continue;
 
@@ -96,8 +102,8 @@ void CaptureThread(std::wstring loopId) {
         ConvertFloat32ToInt16Mono16k((float*)loopData, loopFrames, pLoopFmt->nChannels, pLoopFmt->nSamplesPerSec, loop16);
 
         {
-            std::lock_guard<std::mutex> lock(g_buffer_mutex);
-            g_buffer.insert(g_buffer.end(), loop16.begin(), loop16.end());
+            std::lock_guard<std::mutex> lock(g_loopBufferMutex);
+            g_loopBuffer.insert(g_loopBuffer.end(), loop16.begin(), loop16.end());
         }
 
         pLoopCaptureClient->ReleaseBuffer(loopFrames);
@@ -112,37 +118,138 @@ void CaptureThread(std::wstring loopId) {
     CoUninitialize();
 }
 
-EXPORT int StartCapture(const char* loopId) {
-    if (g_running) return 1;
-    
-    int loopLen = MultiByteToWideChar(CP_UTF8, 0, loopId, -1, nullptr, 0);
-    if (loopLen > 0) {
-        std::vector<wchar_t> loopBuffer(loopLen);
-        MultiByteToWideChar(CP_UTF8, 0, loopId, -1, loopBuffer.data(), loopLen);
-        g_loopId.assign(loopBuffer.data(), loopLen - 1);
+void MicRecordingThread(std::wstring micId) {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator* pDeviceEnum = nullptr;
+    IMMDevice *pMicDevice = nullptr;
+    IAudioClient *pMicClient = nullptr;
+    IAudioCaptureClient *pMicCaptureClient = nullptr;
+    WAVEFORMATEX *pMicFmt = nullptr;
+
+    HANDLE micEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&pDeviceEnum));
+    pDeviceEnum->GetDevice(micId.c_str(), &pMicDevice);
+    pDeviceEnum->Release();
+
+    pMicDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&pMicClient);
+
+    pMicClient->GetMixFormat(&pMicFmt);
+
+    pMicClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 0x989680, 0, pMicFmt, nullptr);
+
+    pMicClient->SetEventHandle(micEvent);
+
+    pMicClient->GetService(__uuidof(IAudioCaptureClient), (void**)&pMicCaptureClient);
+
+    pMicClient->Start();
+
+
+    while (g_micRunning) {
+        DWORD wait = WaitForSingleObject(micEvent, 1000);
+        if (wait == WAIT_TIMEOUT) continue;
+
+        BYTE *micData = nullptr;
+        UINT32 micFrames = 0;
+        DWORD micFlags = 0;
+
+        if (FAILED(pMicCaptureClient->GetBuffer(&micData, &micFrames, &micFlags, nullptr, nullptr)))
+            break;
+
+        std::vector<BYTE> mic16;
+        ConvertFloat32ToInt16Mono16k((float*)micData, micFrames, pMicFmt->nChannels, pMicFmt->nSamplesPerSec, mic16);
+
+        {
+            std::lock_guard<std::mutex> lock(g_micBufferMutex);
+            g_micBuffer.insert(g_micBuffer.end(), mic16.begin(), mic16.end());
+        }
+
+        pMicCaptureClient->ReleaseBuffer(micFrames);
     }
 
-    g_running = true;
-    g_thread = std::thread(CaptureThread, g_loopId);
-    return 0;
+    pMicClient->Stop();
+    if (pMicCaptureClient) pMicCaptureClient->Release();
+    if (pMicClient) pMicClient->Release();
+    if (pMicDevice) pMicDevice->Release();
+    if (pMicFmt) CoTaskMemFree(pMicFmt);
+    CloseHandle(micEvent);
+    CoUninitialize();
 }
 
-EXPORT void StopCapture() {
-    if (!g_running) return;
-    g_running = false;
-    if (g_thread.joinable()) g_thread.join();
-}
+extern "C" {
+    __declspec(dllexport)
+    int StartLoopRecording(const char* loopId) {
+        if (g_loopRunning) return 1;
+        
+        int loopLen = MultiByteToWideChar(CP_UTF8, 0, loopId, -1, nullptr, 0);
+        if (loopLen > 0) {
+            std::vector<wchar_t> loopBuffer(loopLen);
+            MultiByteToWideChar(CP_UTF8, 0, loopId, -1, loopBuffer.data(), loopLen);
+            g_loopId.assign(loopBuffer.data(), loopLen - 1);
+        }
 
-EXPORT int GetAudio(unsigned char** buffer, int* length) {
-    std::lock_guard<std::mutex> lock(g_buffer_mutex);
-    if (g_buffer.size() < g_minBufferSize) {
-        *buffer = nullptr;
-        *length = 0;
+        g_loopRunning = true;
+        g_loopThread = std::thread(LoopRecordingThread, g_loopId);
         return 0;
     }
-    g_returnBuffer = std::move(g_buffer);
-    g_buffer.clear();
-    *buffer = g_returnBuffer.data();
-    *length = (int)g_returnBuffer.size();
-    return 1;
+
+    __declspec(dllexport)
+    int StartMicRecording(const char* micId) {
+        if (g_micRunning) return 1;
+        
+        int micLen = MultiByteToWideChar(CP_UTF8, 0, micId, -1, nullptr, 0);
+        if (micLen > 0) {
+            std::vector<wchar_t> micBuffer(micLen);
+            MultiByteToWideChar(CP_UTF8, 0, micId, -1, micBuffer.data(), micLen);
+            g_micId.assign(micBuffer.data(), micLen - 1);
+        }
+
+        g_micRunning = true;
+        g_micThread = std::thread(MicRecordingThread, g_micId);
+        return 0;
+    }
+
+    __declspec(dllexport)
+    void StopLoopRecording() {
+        if (!g_loopRunning) return;
+        g_loopRunning = false;
+        if (g_loopThread.joinable()) g_loopThread.join();
+    }
+
+    __declspec(dllexport)
+    void StopMicRecording() {
+        if (!g_micRunning) return;
+        g_micRunning = false;
+        if (g_micThread.joinable()) g_micThread.join();
+    }
+
+    __declspec(dllexport)
+    int GetLoopAudio(unsigned char** buffer, int* length) {
+        std::lock_guard<std::mutex> lock(g_loopBufferMutex);
+        if (g_loopBuffer.size() < g_minLoopBufferSize) {
+            *buffer = nullptr;
+            *length = 0;
+            return 0;
+        }
+        g_returnLoopBuffer = std::move(g_loopBuffer);
+        g_loopBuffer.clear();
+        *buffer = g_returnLoopBuffer.data();
+        *length = (int)g_returnLoopBuffer.size();
+        return 1;
+    }
+
+    __declspec(dllexport)
+    int GetMicAudio(unsigned char** buffer, int* length) {
+        std::lock_guard<std::mutex> lock(g_micBufferMutex);
+        if (g_micBuffer.size() < g_minMicBufferSize) {
+            *buffer = nullptr;
+            *length = 0;
+            return 0;
+        }
+        g_returnMicBuffer = std::move(g_micBuffer);
+        g_micBuffer.clear();
+        *buffer = g_returnMicBuffer.data();
+        *length = (int)g_returnMicBuffer.size();
+        return 1;
+    }
 }

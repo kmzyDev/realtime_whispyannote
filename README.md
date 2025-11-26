@@ -25,8 +25,8 @@ uv run dlmodel/dlannote.py
 ```
 docker compose up -d
 docker exec -it build_env bash
-x86_64-w64-mingw32-g++ -static -static-libgcc -static-libstdc++ -shared -o cable.dll cable.cpp -lole32
-x86_64-w64-mingw32-g++ -static -static-libgcc -static-libstdc++ -shared -o device_select.dll device_select.cpp -lole32
+x86_64-w64-mingw32-g++ -Wall -Wextra -static -static-libgcc -static-libstdc++ -shared -o cable.dll cable.cpp -lole32
+x86_64-w64-mingw32-g++ -Wall -Wextra -static -static-libgcc -static-libstdc++ -shared -o device_select.dll device_select.cpp -lole32
 ```
 ※ビルド完了後はコンテナから出てください
 
