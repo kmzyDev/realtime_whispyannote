@@ -19,7 +19,7 @@ https://github.com/neonbjb/tortoise-tts/issues/298#issuecomment-2174432438
 uv run dlmodel/whisper.py
 uv run dlmodel/annote.py
 ```
-※dlannoteはHugging Faceのトークンと同意が必要になります
+※annote.pyはHugging Faceのトークンと同意が必要になります
 
 4. **DLLビルド**  
 ```
